@@ -1,0 +1,1 @@
+#This folder is for generation of the transcript from any given video
