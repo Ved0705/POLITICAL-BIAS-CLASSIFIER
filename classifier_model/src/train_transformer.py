@@ -15,7 +15,11 @@ df['labels'] = df['bias'].map(label_map)
 # Drop rows where bias wasn't in the map
 df = df.dropna(subset=['labels']).reset_index(drop=True)
 df['labels'] = df['labels'].astype(int)
-print(f"✅ Loaded {len(df)} rows. Label distribution:\n{df['labels'].value_counts()}\n")
+
+# Balance the dataset (same as in baseline)
+min_class_size = df['labels'].value_counts().min()
+df = df.groupby('labels').sample(n=min_class_size, random_state=42)
+print(f"✅ Loaded and balanced dataset ({len(df)} rows). Label distribution:\n{df['labels'].value_counts()}\n")
 
 # ── Build HuggingFace Dataset (only content + labels needed) ─────────────────
 hf_dataset = Dataset.from_pandas(df[['content', 'labels']])
