@@ -8,6 +8,9 @@ Dataset: cajcodes/political-bias
 We rename columns to match what the training scripts expect:
   - 'text'  -> 'content'
   - 'label' -> 'bias'  (mapped to string: Left / Center / Right)
+
+NEW:
+  - Added 'labels' column (numeric) for transformer training
 """
 
 import os
@@ -19,6 +22,7 @@ DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 LABEL_MAP = {0: "Left", 1: "Center", 2: "Right"}
+REVERSE_LABEL_MAP = {"Left": 0, "Center": 1, "Right": 2}
 
 print("⬇️  Downloading dataset from Hugging Face (cajcodes/political-bias)…")
 ds = load_dataset("cajcodes/political-bias")
@@ -38,10 +42,15 @@ def to_df(split):
         df["bias"] = df["label"].map(LABEL_MAP).fillna(df["label"].astype(str))
         df = df.drop(columns=["label"])
 
+    # ✅ NEW: create numeric labels for transformer
+    if "bias" in df.columns:
+        df["labels"] = df["bias"].map(REVERSE_LABEL_MAP)
+
     # keep only what the training scripts use
-    keep = [c for c in ["content", "bias"] if c in df.columns]
+    keep = [c for c in ["content", "bias", "labels"] if c in df.columns]
     df = df[keep].dropna()
     df = df[df["content"].str.strip() != ""]
+
     return df.reset_index(drop=True)
 
 

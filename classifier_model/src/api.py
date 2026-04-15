@@ -2,12 +2,12 @@ import os
 import re
 import joblib
 import numpy as np
-import subprocess
 import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
+
 logging.basicConfig(level=logging.INFO)
 
 # Define request/response schemas
@@ -29,7 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Text cleaning function (SAME as data_prep.py and train_baseline.py)
+# Text cleaning function
 def clean_text(text: str) -> str:
     text = str(text).lower()
     text = re.sub(r"http\S+", "", text)
@@ -59,10 +59,14 @@ async def load_model():
         vectorizer = joblib.load(vectorizer_path)
         print(f"✅ Model loaded: {clf}")
         print(f"✅ Vectorizer loaded: {vectorizer}")
-        np.savetxt(os.path.join(models_dir, "coef.csv"), clf.coef_, delimiter=",")   
+
+        np.savetxt(os.path.join(models_dir, "coef.csv"), clf.coef_, delimiter=",")
         np.savetxt(os.path.join(models_dir, "intercept.csv"), clf.intercept_, delimiter=",")
-        pd.DataFrame([{"class": c} for c in clf.classes_]).to_csv(os.path.join(models_dir, "classes.csv"), index=False)
-        print("✅ Exported SVM weights to CSV for R script.")
+        pd.DataFrame([{"class": c} for c in clf.classes_]).to_csv(
+            os.path.join(models_dir, "classes.csv"), index=False
+        )
+
+        print("✅ Exported SVM weights to CSV")
 
         # Debugging: run a test prediction at startup
         print("\n--- Startup Test Predictions ---")
@@ -83,10 +87,16 @@ async def load_model():
     except Exception as e:
         print(f"❌ Error loading model: {e}")
 
-@app.post("/predict", response_model=PredictResponse)
 
+@app.get("/predict", response_model=PredictResponse)
+async def predict_get(text: str):
+    return await predict(PredictRequest(text=text))
+
+
+@app.post("/predict", response_model=PredictResponse)
 async def predict(request: PredictRequest):
     print("🔥🔥🔥 PREDICT ENDPOINT HIT 🔥🔥🔥")
+
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
@@ -96,41 +106,33 @@ async def predict(request: PredictRequest):
             detail="Model not loaded. Run 'python src/train_baseline.py' first.",
         )
 
-    # 1. Clean input (SAME preprocessing as training)
+    # 1. Clean input
     cleaned_input = clean_text(request.text)
 
     if not cleaned_input:
-        raise HTTPException(status_code=400, detail="Text contained no valid words after cleaning.")
+        raise HTTPException(
+            status_code=400,
+            detail="Text contained no valid words after cleaning."
+        )
 
-    # 2. Vectorize with the SAME TF-IDF vectorizer used during training
+    # 2. Vectorize
     text_vec = vectorizer.transform([cleaned_input])
 
-    # 3. Predict via R script delegation
+    # 3. Predict directly using sklearn
     try:
-        logging.info("Exporting features to CSV and delegating to R...")
-        features_path = os.path.join(os.path.dirname(__file__), "..", "temp", "features.csv")
-        pd.DataFrame(text_vec.toarray()).to_csv(features_path, index=False)
-        
-        # Execute the R script
-        rscript_path = r"C:\Program Files\R\R-4.4.2\bin\Rscript.exe"
-        r_script = os.path.join(os.path.dirname(__file__), "..", "analysis.R")
-        subprocess.run([rscript_path, r_script], check=True, cwd=os.path.join(os.path.dirname(__file__), ".."))
-        
-        # Read the computed result from R
-        with open(os.path.join(os.path.dirname(__file__), "..", "temp", "output.txt"), "r") as f:
-            prediction = f.read().strip()
-            
-        logging.info(f"Received prediction from R: {prediction}")
-        print(f"Input: '{request.text[:80]}...' → Cleaned: '{cleaned_input[:80]}...' → Prediction: {prediction}")
-        return PredictResponse(prediction=prediction)
-    except subprocess.CalledProcessError as e:
-        print(f"R Script execution failed: {e}")
-        raise HTTPException(status_code=500, detail="Error during R script delegation.")
+        prediction = clf.predict(text_vec)[0]
+
+        logging.info(f"Prediction: {prediction}")
+        print(f"Input: '{request.text[:80]}...' → Prediction: {prediction}")
+
+        return PredictResponse(prediction=str(prediction))
+
     except Exception as e:
         print(f"Prediction error: {e}")
         raise HTTPException(status_code=500, detail="Error during model inference.")
 
-# If executed directly
+
+# Run locally
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("src.api:app", host="127.0.0.1", port=8000, reload=True)
