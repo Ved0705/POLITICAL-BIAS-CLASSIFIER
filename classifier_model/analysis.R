@@ -21,10 +21,8 @@ for (i in seq_along(b)) {
     scores[, i] <- scores[, i] + b[i]
 }
 
-# Find the index of the maximum score for each sample
-max_idx <- apply(scores, 1, which.max)
 
-# Map the index to the original class name
+max_idx <- apply(scores, 1, which.max)
 predicted_class <- classes$class[max_idx]
 
 # Write out the predicted class
