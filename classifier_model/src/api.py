@@ -7,6 +7,8 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import logging
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.formatters import TextFormatter
 
 logging.basicConfig(level=logging.INFO)
 
@@ -106,8 +108,24 @@ async def predict(request: PredictRequest):
             detail="Model not loaded. Run 'python src/train_baseline.py' first.",
         )
 
-    # 1. Clean input
-    cleaned_input = clean_text(request.text)
+    # 1. Check if the input is a YouTube URL
+    youtube_url_pattern = r"(?:https?:\/\/)?(?:www\.)?(?:youtube\.com|youtu\.be)\/(?:watch\?v=)?([a-zA-Z0-9_-]{11})"
+    youtube_match = re.search(youtube_url_pattern, request.text)
+
+    if youtube_match:
+        video_id = youtube_match.group(1)
+        print(f"📺 Detected YouTube Video ID: {video_id}. Fetching transcript...")
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            full_text = " ".join([t['text'] for t in transcript])
+            cleaned_input = clean_text(full_text)
+            print("✅ Transcript downloaded and cleaned successfully!")
+        except Exception as e:
+            print(f"❌ Could not download transcript: {e}")
+            raise HTTPException(status_code=400, detail=f"Could not extract YouTube transcript: Make sure the video has closed captions enabled.")
+    else:
+        # Otherwise, process as standard text
+        cleaned_input = clean_text(request.text)
 
     if not cleaned_input:
         raise HTTPException(

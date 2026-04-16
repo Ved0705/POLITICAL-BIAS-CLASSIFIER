@@ -72,7 +72,7 @@ models_dir = os.path.join(os.path.dirname(__file__), "..", "models")
 os.makedirs(models_dir, exist_ok=True)
 joblib.dump(clf, os.path.join(models_dir, "model.pkl"))
 joblib.dump(vectorizer, os.path.join(models_dir, "vectorizer.pkl"))
-print(f"\n💾 Saved model.pkl and vectorizer.pkl to {models_dir}")
+print(f"\n[Saved] model.pkl and vectorizer.pkl to {models_dir}")
 
 # 6. Add manual test predictions
 print("\n--- Manual Test Predictions ---")
