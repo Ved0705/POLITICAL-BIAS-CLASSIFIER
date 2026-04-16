@@ -1,90 +1,131 @@
 import os
 import joblib
+import logging
 import pandas as pd
+
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.svm import LinearSVC
 from sklearn.metrics import classification_report, accuracy_score
+from sklearn.pipeline import Pipeline
 
-# Load cleaned train Parquet
-data_path = os.path.join(os.path.dirname(__file__), "data", "cleaned_train.parquet")
-df = pd.read_parquet(data_path)
+# ── Setup ─────────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-print("Columns:", df.columns.tolist())
+SEED = 42
+VALID_LABELS = ["Left", "Center", "Right"]
 
-# 1. Fix label issues
-df['bias'] = df['bias'].astype(str).str.strip().str.title()
-# Map any residual numeric string labels just in case
-bias_map = {'0': 'Left', '1': 'Center', '2': 'Right', '0.0': 'Left', '1.0': 'Center', '2.0': 'Right'}
-df['bias'] = df['bias'].replace(bias_map)
+# ── Load & Clean Data ─────────────────────────────────────────────────────────
+def load_and_clean_data(path):
+    df = pd.read_parquet(path)
 
-# Keep only the valid labels
-valid_labels = ['Left', 'Center', 'Right']
-df = df[df['bias'].isin(valid_labels)]
+    # Normalize labels
+    df["bias"] = df["bias"].astype(str).str.strip().str.title()
 
-# THE DATASET MAINTAINER FLIPPED THE LABELS! 
-# "Left" in the raw data contains right-wing text (low taxes, military) 
-# and "Right" in the raw data contains left-wing text (unions, worker rights).
-# We MUST flip them here so the model learns the correct definitions.
-df['bias'] = df['bias'].replace({'Left': 'Right', 'Right': 'Left'})
+    # Fix numeric labels if present
+    bias_map = {
+        "0": "Left", "1": "Center", "2": "Right",
+        "0.0": "Left", "1.0": "Center", "2.0": "Right"
+    }
+    df["bias"] = df["bias"].replace(bias_map)
 
-# 2. Add label validation
-print("\nUnique labels before balancing:")
-print(df['bias'].unique())
+    # Keep valid labels only
+    df = df[df["bias"].isin(VALID_LABELS)]
 
-# 5. Add debugging outputs (class distribution)
-print("\nClass distribution before balancing:")
-print(df['bias'].value_counts())
+    # Fix flipped dataset issue
+    df["bias"] = df["bias"].replace({"Left": "Right", "Right": "Left"})
 
-# 3. Balance the dataset
-min_class_size = df['bias'].value_counts().min()
-df = df.groupby('bias').sample(n=min_class_size, random_state=42)
+    logger.info(f"Dataset size after cleaning: {len(df)}")
+    logger.info(f"\nClass distribution:\n{df['bias'].value_counts()}")
 
-print("\nClass distribution after balancing:")
-print(df['bias'].value_counts())
+    return df
 
-# Split into train and test sets
-X_train, X_test, y_train, y_test = train_test_split(
-    df['content'], df['bias'], test_size=0.2, random_state=42
-)
 
-# 4. Improve model training
-print("\nTraining model...")
-vectorizer = TfidfVectorizer(max_features=5000, ngram_range=(1, 2))
-X_train_vec = vectorizer.fit_transform(X_train)
-X_test_vec = vectorizer.transform(X_test)
+# ── Balance Dataset ───────────────────────────────────────────────────────────
+def balance_dataset(df):
+    min_size = df["bias"].value_counts().min()
 
-clf = LinearSVC(class_weight="balanced", random_state=42)
-clf.fit(X_train_vec, y_train)
+    df_balanced = (
+        df.groupby("bias", group_keys=False)
+        .apply(lambda x: x.sample(min_size, random_state=SEED))
+        .reset_index(drop=True)
+    )
 
-# 5. Debugging outputs (Train and Test accuracy)
-y_train_pred = clf.predict(X_train_vec)
-y_test_pred = clf.predict(X_test_vec)
+    logger.info(f"\nBalanced class distribution:\n{df_balanced['bias'].value_counts()}")
+    return df_balanced
 
-print(f"\nTrain Accuracy: {accuracy_score(y_train, y_train_pred):.4f}")
-print(f"Test Accuracy: {accuracy_score(y_test, y_test_pred):.4f}")
 
-print("\nClassification Report (Test Set):")
-print(classification_report(y_test, y_test_pred))
+# ── Train Model ───────────────────────────────────────────────────────────────
+def train_model(X_train, y_train):
+    pipeline = Pipeline([
+        ("tfidf", TfidfVectorizer(max_features=5000, ngram_range=(1, 2))),
+        ("clf", LinearSVC(class_weight="balanced", random_state=SEED))
+    ])
 
-# Save model and vectorizer for the API backend
-models_dir = os.path.join(os.path.dirname(__file__), "..", "models")
-os.makedirs(models_dir, exist_ok=True)
-joblib.dump(clf, os.path.join(models_dir, "model.pkl"))
-joblib.dump(vectorizer, os.path.join(models_dir, "vectorizer.pkl"))
-print(f"\n[Saved] model.pkl and vectorizer.pkl to {models_dir}")
+    pipeline.fit(X_train, y_train)
+    return pipeline
 
-# 6. Add manual test predictions
-print("\n--- Manual Test Predictions ---")
-test_samples = [
-    "The progressive policies proposed will ensure equality, universal healthcare, and stronger unions for workers.",
-    "Taxes must be lowered to stimulate free market growth and protect individual liberties and constitutional rights.",
-    "Bipartisan infrastructure bills are a sensible moderate approach to repairing roads while maintaining a balanced budget."
-]
 
-test_vecs = vectorizer.transform(test_samples)
-predictions = clf.predict(test_vecs)
+# ── Evaluate Model ────────────────────────────────────────────────────────────
+def evaluate_model(model, X_train, X_test, y_train, y_test):
+    y_train_pred = model.predict(X_train)
+    y_test_pred = model.predict(X_test)
 
-for text, pred in zip(test_samples, predictions):
-    print(f"Text: '{text}'")
-    print(f"Predicted Bias: {pred}\n")
+    logger.info(f"\nTrain Accuracy: {accuracy_score(y_train, y_train_pred):.4f}")
+    logger.info(f"Test Accuracy: {accuracy_score(y_test, y_test_pred):.4f}")
+
+    logger.info("\nClassification Report (Test Set):")
+    logger.info("\n" + classification_report(y_test, y_test_pred))
+
+
+# ── Save Model ────────────────────────────────────────────────────────────────
+def save_model(model, base_dir):
+    models_dir = os.path.join(base_dir, "..", "models")
+    os.makedirs(models_dir, exist_ok=True)
+
+    joblib.dump(model, os.path.join(models_dir, "pipeline.pkl"))
+    logger.info(f"\n[Saved] pipeline.pkl to {models_dir}")
+
+
+# ── Manual Testing ────────────────────────────────────────────────────────────
+def manual_test(model):
+    logger.info("\n--- Manual Test Predictions ---")
+
+    samples = [
+        "The progressive policies proposed will ensure equality, universal healthcare, and stronger unions for workers.",
+        "Taxes must be lowered to stimulate free market growth and protect individual liberties and constitutional rights.",
+        "Bipartisan infrastructure bills are a sensible moderate approach to repairing roads while maintaining a balanced budget."
+    ]
+
+    preds = model.predict(samples)
+
+    for text, pred in zip(samples, preds):
+        logger.info(f"\nText: {text}\nPredicted Bias: {pred}")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+def main():
+    base_dir = os.path.dirname(__file__)
+    data_path = os.path.join(base_dir, "data", "cleaned_train.parquet")
+
+    df = load_and_clean_data(data_path)
+    df = balance_dataset(df)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        df["content"], df["bias"],
+        test_size=0.2,
+        stratify=df["bias"],   # IMPORTANT improvement
+        random_state=SEED
+    )
+
+    logger.info("\nTraining model...")
+    model = train_model(X_train, y_train)
+
+    evaluate_model(model, X_train, X_test, y_train, y_test)
+    save_model(model, base_dir)
+    manual_test(model)
+
+
+if __name__ == "__main__":
+    main()
